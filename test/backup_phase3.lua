@@ -221,8 +221,25 @@ local function gate()
         dir_line("20261008:143015", "/fvl"),
         dir_line("20261008:143015", "/fvl/a/docs/sub"),
     }), "line 2 parent is missing")
+    reject(as_listing({
+        dir_line("20261008:143015", "/fvl"),
+        file_line("20261008:143015", "/fvl/a", 4),
+        dir_line("20261008:143015", "/fvl/a/b"),
+    }), "line 3 parent is missing")
     reject(as_listing({ file_line("20261008:143015", "/fvl/a/readme", 4) }),
         "line 1 root is not a directory")
+
+    local dotted = accept(as_listing({
+        dir_line("20261008:143015", "/fvl/adm"),
+        dir_line("20261008:143015", "/fvl/adm/ceph"),
+        dir_line("20261008:143015", "/fvl/adm/ceph-csi"),
+        file_line("20261008:143015", "/fvl/adm/ceph/.dot", 4),
+    }), "sibling between a directory and its child")
+    if dotted then
+        expect(#dotted == 4, "sibling between count")
+        expect(dotted[4].path == "/fvl/adm/ceph/.dot" and dotted[4].kind == "file",
+            "dot child kept")
+    end
     reject(42, "listing must be a string")
 
     local function expect_mtime(text)
@@ -241,6 +258,8 @@ local function gate()
     expect_mtime("20261008:143015")
     expect_mtime("20260101:000000")
     expect_mtime("20260701:120000")
+    expect_mtime("20260705:180030")
+    expect_mtime("20260705:180036")
 
     local one = accept(as_listing({ dir_line("20261008:143015", "/fvl/a") }), "only /fvl/a")
     if one then

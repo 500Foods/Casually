@@ -154,6 +154,7 @@ expect_error({ "--dest" }, "casually_backup: --dest requires a value")
 expect_error({ "--source-map" }, "casually_backup: --source-map requires a value")
 expect_error({ "--omit-limit" }, "casually_backup: --omit-limit requires a value")
 expect_error({ "--omit-fraction" }, "casually_backup: --omit-fraction requires a value")
+expect_error({ "--workers" }, "casually_backup: --workers requires a value")
 expect_error({ "--dry-run" },
     "casually_backup: use either --config or --index with --dest")
 
@@ -183,8 +184,16 @@ expect(both and both.source_map[1].alias == "/fvl"
     and both.source_map[2].path == "/mnt/other",
     "repeated --source-map splits on the first equals")
 expect(both and both.dry_run == true
-    and both.omit_limit == "50" and both.omit_fraction == "0.02",
+    and both.omit_limit == "50" and both.omit_fraction == "0.02"
+    and both.workers == nil,
     "flag form accepts dry-run and omission overrides")
+
+local with_workers = api.parse_args({
+    "--config", "/any/backup.json",
+    "--workers", "4",
+})
+expect(with_workers and with_workers.workers == "4" and with_workers.config == "/any/backup.json",
+    "parser keeps --workers")
 
 local with_config = api.parse_args({
     "--omit-fraction", "0.5",
@@ -211,6 +220,7 @@ expect(help:find("--source-map <alias>=<path>", 1, true) ~= nil, "help describes
 expect(help:find("--dry-run", 1, true) ~= nil, "help describes --dry-run")
 expect(help:find("--omit-limit <n>", 1, true) ~= nil, "help describes --omit-limit")
 expect(help:find("--omit-fraction <number>", 1, true) ~= nil, "help describes --omit-fraction")
+expect(help:find("--workers <n>", 1, true) ~= nil, "help describes --workers")
 expect_ok({ "--help" }, help)
 
 local version = table.concat(api.version_lines(), "\n") .. "\n"

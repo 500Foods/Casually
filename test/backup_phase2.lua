@@ -104,6 +104,9 @@ local function document(opts)
     if opts.omit_fraction ~= nil then
         parts[#parts + 1] = '"omit_fraction":' .. opts.omit_fraction
     end
+    if opts.workers ~= nil then
+        parts[#parts + 1] = '"workers":' .. opts.workers
+    end
     if opts.extra then
         parts[#parts + 1] = opts.extra
     end
@@ -305,7 +308,13 @@ local function expect_shape(cfg, want, label)
         label .. " omit_limit " .. tostring(cfg.omit_limit))
     expect(cfg.omit_fraction == want.omit_fraction,
         label .. " omit_fraction " .. tostring(cfg.omit_fraction))
-    expect(keys_of(cfg) == "destinations,exclude,index,omit_fraction,omit_limit,source_map",
+    local want_workers = want.workers
+    if want_workers == nil then
+        want_workers = 4
+    end
+    expect(cfg.workers == want_workers,
+        label .. " workers " .. tostring(cfg.workers))
+    expect(keys_of(cfg) == "destinations,exclude,index,omit_fraction,omit_limit,source_map,workers",
         label .. " keys " .. keys_of(cfg))
 end
 
@@ -313,7 +322,8 @@ local function configs_equal(a, b)
     if type(a) ~= "table" or type(b) ~= "table" then
         return false
     end
-    if a.index ~= b.index or a.omit_limit ~= b.omit_limit or a.omit_fraction ~= b.omit_fraction then
+    if a.index ~= b.index or a.omit_limit ~= b.omit_limit
+        or a.omit_fraction ~= b.omit_fraction or a.workers ~= b.workers then
         return false
     end
     if #a.destinations ~= #b.destinations or #a.source_map ~= #b.source_map
@@ -584,6 +594,16 @@ local function gate()
         "omit_limit must be an integer >= 0")
     reject_config(document({ index = jq(listing), destinations = one_dest, omit_limit = "1.5" }),
         "omit_limit must be an integer >= 0")
+    reject_config(document({ index = jq(listing), destinations = one_dest, workers = "null" }),
+        "workers must be an integer from 1 to 64")
+    reject_config(document({ index = jq(listing), destinations = one_dest, workers = '"4"' }),
+        "workers must be an integer from 1 to 64")
+    reject_config(document({ index = jq(listing), destinations = one_dest, workers = "0" }),
+        "workers must be an integer from 1 to 64")
+    reject_config(document({ index = jq(listing), destinations = one_dest, workers = "65" }),
+        "workers must be an integer from 1 to 64")
+    reject_config(document({ index = jq(listing), destinations = one_dest, workers = "1.5" }),
+        "workers must be an integer from 1 to 64")
     reject_config(document({ index = jq(listing), destinations = one_dest, omit_fraction = "null" }),
         "omit_fraction must be a number from 0 to 1")
     reject_config(document({ index = jq(listing), destinations = one_dest, omit_fraction = '"0.02"' }),
@@ -712,7 +732,22 @@ local function gate()
         exclude = {},
         omit_limit = 1000,
         omit_fraction = 0.02,
+        workers = 4,
     }, "explicit default omission numbers")
+
+    accept_config(document({
+        index = jq(listing),
+        destinations = one_dest,
+        workers = "1",
+    }), {
+        index = listing,
+        destinations = { dest_a },
+        source_map = {},
+        exclude = {},
+        omit_limit = 1000,
+        omit_fraction = 0.02,
+        workers = 1,
+    }, "one worker")
 
     local override_text = document({
         index = jq(listing),
@@ -782,8 +817,26 @@ local function gate()
         fail("zero flags rejected: " .. tostring(zerr) .. " class " .. tostring(zclass))
     else
         expect(zeroed.omit_limit == 0 and zeroed.omit_fraction == 0, "zero flag values")
+        expect(zeroed.workers == 4, "workers default " .. tostring(zeroed.workers))
     end
     expect_stable("zero flags")
+
+    local worker_cmd = api.parse_args({
+        "--index", listing,
+        "--dest", dest_a,
+        "--workers", "8",
+    })
+    local worked, werr, wclass = api.load_config(worker_cmd)
+    if not worked then
+        fail("workers flag rejected: " .. tostring(werr) .. " class " .. tostring(wclass))
+    else
+        expect(worked.workers == 8, "workers flag " .. tostring(worked.workers))
+    end
+    expect_stable("workers flag")
+    reject_flags({ "--index", listing, "--dest", dest_a, "--workers", "0" },
+        "--workers must be an integer from 1 to 64")
+    reject_flags({ "--index", listing, "--dest", dest_a, "--workers", "65" },
+        "--workers must be an integer from 1 to 64")
 
     reject_flags({ "--index", "relative", "--dest", dest_a }, "--index must be absolute")
     reject_flags({ "--index", "", "--dest", dest_a }, "--index is empty")
