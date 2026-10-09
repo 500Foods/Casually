@@ -2873,10 +2873,15 @@ end
 
 local function check_source_file(path, cache)
     local acc = ""
-    local final = path:match("([^/]+)$")
+    local parts = {}
     for part in path:gmatch("[^/]+") do
+        parts[#parts + 1] = part
+    end
+    local n = #parts
+    for i = 1, n do
+        local part = parts[i]
         acc = acc .. "/" .. part
-        if part ~= final and cache and cache[acc] then
+        if i < n and cache and cache[acc] then
             -- This worker already lstat'd this directory.
         else
             local attr, err = lfs.symlinkattributes(acc)
@@ -2886,7 +2891,7 @@ local function check_source_file(path, cache)
             if attr.mode == "link" then
                 return apply_fail("source is a symlink: " .. acc)
             end
-            if part == final then
+            if i == n then
                 if attr.mode ~= "file" then
                     return apply_fail("source is not a regular file: " .. acc)
                 end

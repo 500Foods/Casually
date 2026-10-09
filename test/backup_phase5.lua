@@ -1377,6 +1377,33 @@ local function gate()
     expect_clean(cli_dest, "cli")
 
     -- One parent process and four worker processes publish the same bytes.
+    -- A directory whose name matches a file inside it (e.g. dir.c/dir.c)
+    -- must not confuse check_source_file into treating the dir as the final
+    -- path component. Workers must still copy the inner file.
+    local same = case_dir("samename")
+    local same_src = same .. "/src"
+    local same_dest = same .. "/dest"
+    mkdir_p(same_dest)
+    write_file(same_src .. "/fvl/scripts/dir.c/dir.c", "content\n")
+    sh("chmod 755 " .. sh_quote(same_src .. "/fvl"))
+    sh("chmod 755 " .. sh_quote(same_src .. "/fvl/scripts"))
+    sh("chmod 755 " .. sh_quote(same_src .. "/fvl/scripts/dir.c"))
+    sh("chmod 644 " .. sh_quote(same_src .. "/fvl/scripts/dir.c/dir.c"))
+    local same_rows = {
+        { abs = same_src .. "/fvl", listing = "/fvl" },
+        { abs = same_src .. "/fvl/scripts", listing = "/fvl/scripts" },
+        { abs = same_src .. "/fvl/scripts/dir.c", listing = "/fvl/scripts/dir.c" },
+        { abs = same_src .. "/fvl/scripts/dir.c/dir.c", listing = "/fvl/scripts/dir.c/dir.c" },
+    }
+    code, out, err = run_perform(config_for(write_listing(same, S1, same_rows), { same_dest }, {
+        source_map = map_of(same_src),
+    }), {}, user_fs())
+    expect_success(code, out, err, "same-name dir")
+    expect_file(same_dest .. "/_Base/fvl/scripts/dir.c/dir.c", "content\n",
+        "same-name inner file bytes")
+    expect(stat_mode(same_dest .. "/_Base/fvl/scripts/dir.c") == "755", "same-name dir mode")
+    expect_clean(same_dest, "same-name dir")
+
     -- A newline in the name stays inside the framed job. A short source does
     -- not publish. workers=1 stays in the parent and matches the pool.
     local function worker_tree(label, workers)
