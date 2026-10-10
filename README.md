@@ -13,13 +13,13 @@ When you have a large remote filesystem and need multiple local copies, `rsync` 
 For a large filesystem with hundreds of thousands of files where only a few small files change daily, this is ideal. Virtually no network traffic except for the changed files.
 
 ```
-┌──────────────┐     ┌────────────────┐     ┌──────────────┐
-│  Remote host │     │  Listing file  │     │ Local backup │
-│               │     │  (transfer)   │     │ destinations │
-│ casually_index│────>│  brotli -c    │──>   │               │
-│   walk dirs   │     │  scp/ssh      │     │ casually_backup│
-│   write listing│     │               │     │   copy changed│
-└──────────────┘     └────────────────┘     └──────────────┘
+┌─────────────────┐     ┌────────────────┐     ┌─────────────────┐
+│  Remote host    │     │  Listing file  │     │ Local backu     │
+│                 │     │  (transfer)    │     │ destinations    │
+│ casually_index  │────>│  brotli -c     │──>  │                 │
+│   walk dirs     │     │  scp/ssh       │     │ casually_backup │
+│   write listing │     │                │     │   copy changed  │
+└─────────────────┘     └────────────────┘     └─────────────────┘
 ```
 
 ## Quick Start
