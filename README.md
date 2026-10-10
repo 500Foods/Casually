@@ -50,6 +50,7 @@ Or use a JSON config file for repeatable, multi-root setups:
 |----------|-------------|
 | [Index](INSTRUCTIONS-INDEX.md) | How to generate listings: `casually_index.lua` CLI flags, JSON config, listing format, exclude patterns. |
 | [Backup](INSTRUCTIONS-BACKUP.md) | How to run backups: `casually_backup.lua` CLI flags, JSON config, source_map remapping, report output, exit codes. |
+| [Developers](DEVELOPERS.md) | Developer guide to the Lua source: shared module pattern, listing format, plan/apply/perform pipeline, worker pool, test phases, the `dir.c/dir.c` fix, and Lua idioms. |
 
 ## Requirements
 
