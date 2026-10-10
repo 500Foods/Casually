@@ -80,6 +80,7 @@ local ONCE = {
     ["--omit-limit"] = true,
     ["--omit-fraction"] = true,
     ["--workers"] = true,
+    ["--report"] = true,
 }
 
 local function one_line(text)
@@ -193,6 +194,7 @@ function M.parse_args(argv)
         omit_limit = values["--omit-limit"],
         omit_fraction = values["--omit-fraction"],
         workers = values["--workers"],
+        report = values["--report"],
     }
     if has_config then
         cmd.config = values["--config"]
@@ -219,6 +221,7 @@ function M.help_text()
         "--omit-limit <n>             Refuse a snapshot that drops more than n paths. Default 1000.",
         "--omit-fraction <number>     Refuse a snapshot that drops more than this fraction. Default 0.02.",
         "--workers <n>                Copy files with n processes. Default 4. From 1 to 64.",
+        "--report <email>              Print a backup summary to stderr after running.",
         "--help                       Show this help and exit.",
         "--version                    Show the script, Lua, and terminal.lua versions.",
         "",
@@ -243,6 +246,7 @@ local CONFIG_KEYS = {
     omit_limit = true,
     omit_fraction = true,
     workers = true,
+    report = true,
 }
 
 local MAP_KEYS = {
@@ -619,7 +623,7 @@ local function take_string_array(entries, label)
     return entries
 end
 
-local function finish_config(index, dests, map, exclude, limit, fraction, workers)
+local function finish_config(index, dests, map, exclude, limit, fraction, workers, report)
     return {
         index = index,
         destinations = dests,
@@ -628,6 +632,7 @@ local function finish_config(index, dests, map, exclude, limit, fraction, worker
         omit_limit = limit,
         omit_fraction = fraction,
         workers = workers,
+        report = report,
     }
 end
 
@@ -642,6 +647,16 @@ local function resolve_workers(cmd, obj)
     return check_workers(raw, "workers")
 end
 
+local function resolve_report(cmd, obj)
+    if cmd.report ~= nil then
+        return cmd.report
+    end
+    if obj ~= nil and obj.report ~= nil and obj.report ~= JSON_NULL then
+        return obj.report
+    end
+    return nil
+end
+
 local function assemble(index, dests, map, exclude, cmd, obj)
     local limit, fraction, err, class = resolve_limits(cmd, obj)
     if class then
@@ -652,7 +667,8 @@ local function assemble(index, dests, map, exclude, cmd, obj)
     if class then
         return nil, err, class
     end
-    return finish_config(index, dests, map, exclude, limit, fraction, workers)
+    local report = resolve_report(cmd, obj)
+    return finish_config(index, dests, map, exclude, limit, fraction, workers, report)
 end
 
 local function decode_config(text)
@@ -3590,6 +3606,12 @@ function M.apply(config, fs, plan, screen)
     local function warn(reason)
         warnings[#warnings + 1] = reason
     end
+    local stats = {
+        copy_bytes = 0,
+    }
+    local function add_bytes(n)
+        stats.copy_bytes = stats.copy_bytes + n
+    end
 
     if screen then
         local sok, serr, sclass = screen:pulse()
@@ -4147,6 +4169,45 @@ local function stdout_is_tty()
     return ok and yes == true
 end
 
+local function report_stats(plan, elapsed, apply_warnings)
+    local records = plan.records or {}
+    local total_files = 0
+    local total_bytes = 0
+    local rec
+    for i = 1, #records do
+        rec = records[i]
+        if rec.kind == "file" then
+            total_files = total_files + 1
+            total_bytes = total_bytes + (rec.size or 0)
+        end
+    end
+    local added_files = 0
+    local added_bytes = 0
+    for i = 1, #plan.destinations do
+        local copies = plan.destinations[i].actions.copy
+        for n = 1, #copies do
+            added_files = added_files + 1
+            added_bytes = added_bytes + (copies[n].size or 0)
+        end
+    end
+    if apply_warnings == nil then
+        apply_warnings = {}
+    end
+    local warn_count = #plan.warnings + #apply_warnings
+    local lines = {}
+    lines[#lines + 1] = "=== casually_backup report ==="
+    lines[#lines + 1] = string.format("stamp:            %s", plan.stamp or "(unknown)")
+    lines[#lines + 1] = string.format("elapsed:          %s", M.format_elapsed(elapsed))
+    lines[#lines + 1] = string.format("files added:      %d", added_files)
+    lines[#lines + 1] = string.format("bytes added:      %s", M.format_bytes(added_bytes))
+    lines[#lines + 1] = string.format("files tracked:    %d", total_files)
+    lines[#lines + 1] = string.format("bytes tracked:    %s", M.format_bytes(total_bytes))
+    lines[#lines + 1] = string.format("destinations:     %d", #plan.destinations)
+    lines[#lines + 1] = string.format("warnings:         %d", warn_count)
+    lines[#lines + 1] = "=== end report ==="
+    return table.concat(lines, "\n") .. "\n"
+end
+
 function M.perform(config, opts, fs, out, err_out, screen)
     out = out or io.stdout
     err_out = err_out or io.stderr
@@ -4154,6 +4215,7 @@ function M.perform(config, opts, fs, out, err_out, screen)
     if opts.dry_run then
         screen = nil
     end
+    local start_time = system.monotime()
     local plan, err, class = M.plan(config, fs, screen)
     if not plan then
         if screen then
@@ -4182,12 +4244,16 @@ function M.perform(config, opts, fs, out, err_out, screen)
         err_out:write("casually_backup: " .. one_line(err) .. "\n")
         return exit_code(class)
     end
-    if screen then
+     if screen then
         screen.warnings = plan.warnings
         if apply_warnings then
             for i = 1, #apply_warnings do
                 screen.warnings[#screen.warnings + 1] = apply_warnings[i]
             end
+        end
+        if config.report then
+            local elapsed = system.monotime() - start_time
+            err_out:write(report_stats(plan, elapsed, apply_warnings))
         end
         return 0
     end
@@ -4198,6 +4264,10 @@ function M.perform(config, opts, fs, out, err_out, screen)
     end
     for i = 1, #plan.warnings do
         err_out:write(plan.warnings[i] .. "\n")
+    end
+    if config.report then
+        local elapsed = system.monotime() - start_time
+        err_out:write(report_stats(plan, elapsed, apply_warnings))
     end
     return 0
 end
