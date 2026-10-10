@@ -2,6 +2,8 @@
 
 A pair of Lua 5.5 scripts for efficient remote filesystem backup. The name is an anagram of "LuaSync" — because why settle for predictable names?
 
+Why Lua? No particular reason. Just been using it for a few projects and thought it would make a nice fit for here.
+
 ## Overview
 
 When you have a large remote filesystem and need multiple local copies, `rsync` and friends can be slow because they scan over the network. Casually takes a different approach:
@@ -14,7 +16,7 @@ For a large filesystem with hundreds of thousands of files where only a few smal
 
 ```
 ┌─────────────────┐     ┌────────────────┐     ┌─────────────────┐
-│  Remote host    │     │  Listing file  │     │ Local backu     │
+│  Remote host    │     │  Listing file  │     │ Local backup    │
 │                 │     │  (transfer)    │     │ destinations    │
 │ casually_index  │────>│  brotli -c     │──>  │                 │
 │   walk dirs     │     │  scp/ssh       │     │ casually_backup │
