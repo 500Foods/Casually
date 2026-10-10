@@ -66,16 +66,16 @@ While this project is currently under active development, feel free to give it a
 [![Count Lines of Code](https://github.com/500Foods/Casually/actions/workflows/main.yml/badge.svg)](https://github.com/500Foods/Casually/actions/workflows/main.yml)
 <!--CLOC-START -->
 ```cloc
-Last updated at 2026-10-10 22:14:02 UTC
+Last updated at 2026-10-10 22:19:18 UTC
 -------------------------------------------------------------------------------
 Language                     files          blank        comment           code
 -------------------------------------------------------------------------------
 Lua                             16           1035            195          14543
-Markdown                         8            541              2           1262
+Markdown                         8            541              2           1263
 Bourne Shell                     1             11              2             79
 YAML                             2              8             13             37
 -------------------------------------------------------------------------------
-SUM:                            27           1595            212          15921
+SUM:                            27           1595            212          15922
 -------------------------------------------------------------------------------
 2 Files were skipped (duplicate, binary, or without source code):
   gitattributes: 1
