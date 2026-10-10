@@ -81,6 +81,7 @@ local ONCE = {
     ["--omit-fraction"] = true,
     ["--workers"] = true,
     ["--report"] = true,
+    ["--report-dir"] = true,
 }
 
 local function one_line(text)
@@ -195,6 +196,7 @@ function M.parse_args(argv)
         omit_fraction = values["--omit-fraction"],
         workers = values["--workers"],
         report = values["--report"],
+        report_dir = values["--report-dir"],
     }
     if has_config then
         cmd.config = values["--config"]
@@ -222,6 +224,7 @@ function M.help_text()
         "--omit-fraction <number>     Refuse a snapshot that drops more than this fraction. Default 0.02.",
         "--workers <n>                Copy files with n processes. Default 4. From 1 to 64.",
         "--report <email>              Print a backup summary to stderr after running.",
+        "--report-dir <dir>            Write detailed report lines to <dir>/<stamp>.log instead of stderr.",
         "--help                       Show this help and exit.",
         "--version                    Show the script, Lua, and terminal.lua versions.",
         "",
@@ -247,6 +250,7 @@ local CONFIG_KEYS = {
     omit_fraction = true,
     workers = true,
     report = true,
+    report_dir = true,
 }
 
 local MAP_KEYS = {
@@ -623,7 +627,7 @@ local function take_string_array(entries, label)
     return entries
 end
 
-local function finish_config(index, dests, map, exclude, limit, fraction, workers, report)
+local function finish_config(index, dests, map, exclude, limit, fraction, workers, report, report_dir)
     return {
         index = index,
         destinations = dests,
@@ -633,6 +637,7 @@ local function finish_config(index, dests, map, exclude, limit, fraction, worker
         omit_fraction = fraction,
         workers = workers,
         report = report,
+        report_dir = report_dir,
     }
 end
 
@@ -657,6 +662,16 @@ local function resolve_report(cmd, obj)
     return nil
 end
 
+local function resolve_report_dir(cmd, obj)
+    if cmd.report_dir ~= nil then
+        return cmd.report_dir
+    end
+    if obj ~= nil and obj.report_dir ~= nil and obj.report_dir ~= JSON_NULL then
+        return obj.report_dir
+    end
+    return nil
+end
+
 local function assemble(index, dests, map, exclude, cmd, obj)
     local limit, fraction, err, class = resolve_limits(cmd, obj)
     if class then
@@ -668,7 +683,8 @@ local function assemble(index, dests, map, exclude, cmd, obj)
         return nil, err, class
     end
     local report = resolve_report(cmd, obj)
-    return finish_config(index, dests, map, exclude, limit, fraction, workers, report)
+    local report_dir = resolve_report_dir(cmd, obj)
+    return finish_config(index, dests, map, exclude, limit, fraction, workers, report, report_dir)
 end
 
 local function decode_config(text)
@@ -4169,7 +4185,36 @@ local function stdout_is_tty()
     return ok and yes == true
 end
 
-local function report_stats(plan, elapsed, apply_warnings)
+local function extract_branch(path)
+    local segments = {}
+    for seg in path:gmatch("[^/]+") do
+        segments[#segments + 1] = seg
+        if #segments >= 4 then break end
+    end
+    if #segments == 0 then return "(root)" end
+    return table.concat(segments, "/")
+end
+
+local function warning_type(warning)
+    local msg = warning:match("^%S+:%s*(.*)$") or warning
+    local patterns = {
+        { "cannot read source", "skipped source" },
+        { "cannot read", "read error" },
+        { "source is shorter", "size mismatch" },
+        { "source is longer", "size mismatch" },
+        { "source is not a regular file", "source not regular file" },
+        { "source is a symlink", "source is a symlink" },
+        { "left ", "left behind" },
+    }
+    for _, p in ipairs(patterns) do
+        if msg:find(p[1], 1, true) then
+            return p[2]
+        end
+    end
+    return msg:match("^([^:]+)") or "unknown"
+end
+
+local function report_stats(plan, elapsed, apply_warnings, log_path)
     local records = plan.records or {}
     local total_files = 0
     local total_bytes = 0
@@ -4183,7 +4228,8 @@ local function report_stats(plan, elapsed, apply_warnings)
     end
     local added_files = 0
     local added_bytes = 0
-    for i = 1, #plan.destinations do
+    local dest_count = #plan.destinations
+    for i = 1, dest_count do
         local copies = plan.destinations[i].actions.copy
         for n = 1, #copies do
             added_files = added_files + 1
@@ -4194,16 +4240,59 @@ local function report_stats(plan, elapsed, apply_warnings)
         apply_warnings = {}
     end
     local warn_count = #plan.warnings + #apply_warnings
+    local unique_bytes = added_bytes
+    if dest_count > 1 then
+        unique_bytes = math.floor(added_bytes / dest_count)
+    end
     local lines = {}
     lines[#lines + 1] = "=== casually_backup report ==="
     lines[#lines + 1] = string.format("stamp:            %s", plan.stamp or "(unknown)")
     lines[#lines + 1] = string.format("elapsed:          %s", M.format_elapsed(elapsed))
     lines[#lines + 1] = string.format("files added:      %d", added_files)
-    lines[#lines + 1] = string.format("bytes added:      %s", M.format_bytes(added_bytes))
+    lines[#lines + 1] = string.format("bytes added:      %s", M.format_bytes(unique_bytes))
     lines[#lines + 1] = string.format("files tracked:    %d", total_files)
     lines[#lines + 1] = string.format("bytes tracked:    %s", M.format_bytes(total_bytes))
-    lines[#lines + 1] = string.format("destinations:     %d", #plan.destinations)
+    lines[#lines + 1] = string.format("destinations:     %d", dest_count)
     lines[#lines + 1] = string.format("warnings:         %d", warn_count)
+    if log_path then
+        lines[#lines + 1] = string.format("details log:    %s", log_path)
+    end
+    if warn_count > 0 then
+        local by_type = {}
+        local function add_count(t, branch)
+            if not by_type[t] then by_type[t] = {} end
+            if not by_type[t][branch] then by_type[t][branch] = 0 end
+            by_type[t][branch] = by_type[t][branch] + 1
+        end
+        for i = 1, #plan.warnings do
+            local w = plan.warnings[i]
+            add_count(warning_type(w), extract_branch(w))
+        end
+        for i = 1, #apply_warnings do
+            local w = apply_warnings[i]
+            add_count(warning_type(w), extract_branch(w))
+        end
+        lines[#lines + 1] = string.format("%d warnings in %d groups:", warn_count, (function() local c=0 for _ in pairs(by_type) do c=c+1 end return c end)())
+        local sorted_types = {}
+        for t in pairs(by_type) do sorted_types[#sorted_types + 1] = t end
+        table.sort(sorted_types)
+        for _, t in ipairs(sorted_types) do
+            local type_total = 0
+            for b, count in pairs(by_type[t]) do
+                type_total = type_total + count
+            end
+            lines[#lines + 1] = string.format("  %s: %d instances", t, type_total)
+            local sorted_branches = {}
+            for b, count in pairs(by_type[t]) do sorted_branches[#sorted_branches + 1] = { branch = b, count = count } end
+            table.sort(sorted_branches, function(a, b) return a.count > b.count or (a.count == b.count and a.branch < b.branch) end)
+            local branches_shown = 0
+            for _, entry in ipairs(sorted_branches) do
+                if branches_shown >= 4 then break end
+                lines[#lines + 1] = string.format("    - %s: %d instances", entry.branch, entry.count)
+                branches_shown = branches_shown + 1
+            end
+        end
+    end
     lines[#lines + 1] = "=== end report ==="
     return table.concat(lines, "\n") .. "\n"
 end
@@ -4244,7 +4333,7 @@ function M.perform(config, opts, fs, out, err_out, screen)
         err_out:write("casually_backup: " .. one_line(err) .. "\n")
         return exit_code(class)
     end
-     if screen then
+      if screen then
         screen.warnings = plan.warnings
         if apply_warnings then
             for i = 1, #apply_warnings do
@@ -4253,21 +4342,40 @@ function M.perform(config, opts, fs, out, err_out, screen)
         end
         if config.report then
             local elapsed = system.monotime() - start_time
-            err_out:write(report_stats(plan, elapsed, apply_warnings))
+            local log_path = config.report_dir and (config.report_dir .. "/" .. (plan.stamp or "unknown") .. ".log")
+            err_out:write(report_stats(plan, elapsed, apply_warnings, log_path))
         end
         return 0
     end
-    if apply_warnings then
-        for i = 1, #apply_warnings do
-            err_out:write(apply_warnings[i] .. "\n")
-        end
-    end
-    for i = 1, #plan.warnings do
-        err_out:write(plan.warnings[i] .. "\n")
-    end
     if config.report then
         local elapsed = system.monotime() - start_time
-        err_out:write(report_stats(plan, elapsed, apply_warnings))
+        local log_path = config.report_dir and (config.report_dir .. "/" .. (plan.stamp or "unknown") .. ".log")
+        err_out:write(report_stats(plan, elapsed, apply_warnings, log_path))
+    end
+    if config.report_dir then
+        local stamp = plan.stamp or "unknown"
+        local log_path = config.report_dir .. "/" .. stamp .. ".log"
+        local lf = io.open(log_path, "w")
+        if lf then
+            if apply_warnings then
+                for i = 1, #apply_warnings do
+                    lf:write(apply_warnings[i] .. "\n")
+                end
+            end
+            for i = 1, #plan.warnings do
+                lf:write(plan.warnings[i] .. "\n")
+            end
+            lf:close()
+        end
+    else
+        if apply_warnings then
+            for i = 1, #apply_warnings do
+                err_out:write(apply_warnings[i] .. "\n")
+            end
+        end
+        for i = 1, #plan.warnings do
+            err_out:write(plan.warnings[i] .. "\n")
+        end
     end
     return 0
 end

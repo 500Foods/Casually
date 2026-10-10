@@ -156,6 +156,8 @@ expect_error({ "--omit-limit" }, "casually_backup: --omit-limit requires a value
 expect_error({ "--omit-fraction" }, "casually_backup: --omit-fraction requires a value")
 expect_error({ "--workers" }, "casually_backup: --workers requires a value")
 expect_error({ "--report" }, "casually_backup: --report requires a value")
+expect_error({ "--report-dir" }, "casually_backup: --report-dir requires a value")
+
 expect_error({ "--dry-run" },
     "casually_backup: use either --config or --index with --dest")
 
@@ -203,6 +205,15 @@ local with_report = api.parse_args({
 expect(with_report and with_report.report == "user@example.com" and with_report.config == "/any/backup.json",
     "parser keeps --report")
 
+local with_report_dir = api.parse_args({
+    "--config", "/any/backup.json",
+    "--report", "user@example.com",
+    "--report-dir", "/var/log/casually",
+})
+expect(with_report_dir and with_report_dir.report == "user@example.com"
+    and with_report_dir.report_dir == "/var/log/casually",
+    "parser keeps --report-dir")
+
 local with_config = api.parse_args({
     "--omit-fraction", "0.5",
     "--config", "/any/backup.json",
@@ -230,6 +241,7 @@ expect(help:find("--omit-limit <n>", 1, true) ~= nil, "help describes --omit-lim
 expect(help:find("--omit-fraction <number>", 1, true) ~= nil, "help describes --omit-fraction")
 expect(help:find("--workers <n>", 1, true) ~= nil, "help describes --workers")
 expect(help:find("--report <email>", 1, true) ~= nil, "help describes --report")
+expect(help:find("--report-dir <dir>", 1, true) ~= nil, "help describes --report-dir")
 expect_ok({ "--help" }, help)
 
 local version = table.concat(api.version_lines(), "\n") .. "\n"
