@@ -2,6 +2,8 @@
 
 A pair of Lua 5.5 scripts for efficient remote filesystem backup. The name is an anagram of "LuaSync" — because why settle for predictable names?
 
+Why Lua? No particular reason. Just been using it for a few projects and thought it would make a nice fit for here.
+
 ## Overview
 
 When you have a large remote filesystem and need multiple local copies, `rsync` and friends can be slow because they scan over the network. Casually takes a different approach:
@@ -13,13 +15,13 @@ When you have a large remote filesystem and need multiple local copies, `rsync` 
 For a large filesystem with hundreds of thousands of files where only a few small files change daily, this is ideal. Virtually no network traffic except for the changed files.
 
 ```
-┌──────────────┐     ┌────────────────┐     ┌──────────────┐
-│  Remote host │     │  Listing file  │     │ Local backup │
-│               │     │  (transfer)   │     │ destinations │
-│ casually_index│────>│  brotli -c    │──>   │               │
-│   walk dirs   │     │  scp/ssh      │     │ casually_backup│
-│   write listing│     │               │     │   copy changed│
-└──────────────┘     └────────────────┘     └──────────────┘
+┌─────────────────┐     ┌────────────────┐     ┌─────────────────┐
+│  Remote host    │     │  Listing file  │     │ Local backup    │
+│                 │     │  (transfer)    │     │ destinations    │
+│ casually_index  │────>│  brotli -c     │──>  │                 │
+│   walk dirs     │     │  scp/ssh       │     │ casually_backup │
+│   write listing │     │                │     │   copy changed  │
+└─────────────────┘     └────────────────┘     └─────────────────┘
 ```
 
 ## Quick Start
@@ -46,8 +48,8 @@ Or use a JSON config file for repeatable, multi-root setups:
 
 | Document | Description |
 |----------|-------------|
-| [INSTRUCTIONS-INDEX.md](INSTRUCTIONS-INDEX.md) | How to generate listings: `casually_index.lua` CLI flags, JSON config, listing format, exclude patterns. |
-| [INSTRUCTIONS-BACKUP.md](INSTRUCTIONS-BACKUP.md) | How to run backups: `casually_backup.lua` CLI flags, JSON config, source_map remapping, report output, exit codes. |
+| [Index](INSTRUCTIONS-INDEX.md) | How to generate listings: `casually_index.lua` CLI flags, JSON config, listing format, exclude patterns. |
+| [Backup](INSTRUCTIONS-BACKUP.md) | How to run backups: `casually_backup.lua` CLI flags, JSON config, source_map remapping, report output, exit codes. |
 
 ## Requirements
 
@@ -63,16 +65,16 @@ While this project is currently under active development, feel free to give it a
 [![Count Lines of Code](https://github.com/500Foods/Template/actions/workflows/main.yml/badge.svg)](https://github.com/500Foods/Casually/actions/workflows/main.yml)
 <!--CLOC-START -->
 ```cloc
-Last updated at 2026-10-10 21:18:01 UTC
+Last updated at 2026-10-10 22:04:08 UTC
 -------------------------------------------------------------------------------
 Language                     files          blank        comment           code
 -------------------------------------------------------------------------------
-Lua                             16           1030            195          14428
-Markdown                         5            380              2            801
+Lua                             16           1035            195          14543
+Markdown                         7            469              2           1075
 Bourne Shell                     1             11              2             79
 YAML                             2              8             13             37
 -------------------------------------------------------------------------------
-SUM:                            24           1434            212          15460
+SUM:                            26           1523            212          15734
 -------------------------------------------------------------------------------
 2 Files were skipped (duplicate, binary, or without source code):
   gitattributes: 1
