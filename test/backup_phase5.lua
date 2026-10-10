@@ -194,6 +194,12 @@ local function expect_success(code, out, err, msg)
     expect(err == OWNER, msg .. " stderr " .. tostring(err))
 end
 
+local function expect_warn(code, out, err, reason, msg)
+    expect(code == 0, msg .. " exit " .. tostring(code) .. " stderr " .. tostring(err))
+    expect(out == "", msg .. " stdout " .. tostring(out))
+    expect(err == reason .. "\n" .. OWNER, msg .. " stderr " .. tostring(err))
+end
+
 local function expect_stderr(code, out, err, want_code, reason, msg)
     expect(code == want_code, msg .. " exit " .. tostring(code) .. " stderr " .. tostring(err))
     expect(out == "", msg .. " stdout " .. tostring(out))
@@ -735,17 +741,16 @@ local function gate()
             }
         end,
     }))
-    expect_stderr(code, out, err, 2, "source is shorter than the listing", "short seam")
+    expect_warn(code, out, err, "source is shorter than the listing: " .. short_src .. "/fvl/readme (skipped)", "short seam")
     expect(#short_opens == 1, "short seam opens " .. tostring(#short_opens))
-    expect(lfs.symlinkattributes(short_dest .. "/" .. S2) == nil, "short seam published")
+    expect(lfs.symlinkattributes(short_dest .. "/" .. S2) ~= nil, "short seam published")
     expect(ino_of(short_dest .. "/_Base/fvl/readme") == short_ino, "short seam moved _Base")
     expect_file(short_dest .. "/_Base/fvl/readme", "old\n", "short seam _Base bytes")
     local short_parts = partial_dirs(short_dest)
-    expect(#short_parts == 1 and short_parts[1]:find(S2, 1, true) == 1,
-        "short seam partial " .. table.concat(short_parts, ","))
+    expect(#short_parts == 0, "short seam partial " .. table.concat(short_parts, ","))
     expect(lfs.symlinkattributes(short_dest .. "/.casually_backup.lock") == nil,
         "short seam left a lock")
-    expect(err:find("owner not applied", 1, true) == nil, "short seam printed a warning")
+    expect(err:find("owner not applied", 1, true) ~= nil, "short seam printed a warning")
 
     -- A real truncate is shorter than the listing. The real open path reports it.
     local trunc = case_dir("truncate")
@@ -771,13 +776,12 @@ local function gate()
     code, out, err = run_perform(config_for(trunc_index, { trunc_dest }, {
         source_map = map_of(trunc_src),
     }), {}, user_fs())
-    expect_stderr(code, out, err, 2, "source is shorter than the listing", "truncate")
-    expect(lfs.symlinkattributes(trunc_dest .. "/" .. S2) == nil, "truncate published")
+    expect_warn(code, out, err, "source is shorter than the listing: " .. trunc_src .. "/fvl/readme (skipped)", "truncate")
+    expect(lfs.symlinkattributes(trunc_dest .. "/" .. S2) ~= nil, "truncate published")
     expect(ino_of(trunc_dest .. "/_Base/fvl/readme") == trunc_ino, "truncate moved _Base")
     expect_file(trunc_dest .. "/_Base/fvl/readme", "old\n", "truncate _Base bytes")
     local trunc_parts = partial_dirs(trunc_dest)
-    expect(#trunc_parts == 1 and trunc_parts[1]:find(S2, 1, true) == 1,
-        "truncate partial " .. table.concat(trunc_parts, ","))
+    expect(#trunc_parts == 0, "truncate partial " .. table.concat(trunc_parts, ","))
     expect(lfs.symlinkattributes(trunc_dest .. "/.casually_backup.lock") == nil,
         "truncate left a lock")
 
@@ -799,13 +803,12 @@ local function gate()
         { abs = long_src .. "/fvl", listing = "/fvl" },
         { abs = long_src .. "/fvl/readme", listing = "/fvl/readme", size = 4 },
     }), { long_dest }, { source_map = map_of(long_src) }), {}, user_fs())
-    expect_stderr(code, out, err, 2, "source is longer than the listing", "longer")
-    expect(lfs.symlinkattributes(long_dest .. "/" .. S2) == nil, "longer published")
+    expect_warn(code, out, err, "source is longer than the listing: " .. long_src .. "/fvl/readme (skipped)", "longer")
+    expect(lfs.symlinkattributes(long_dest .. "/" .. S2) ~= nil, "longer published")
     expect(ino_of(long_dest .. "/_Base/fvl/readme") == long_ino, "longer moved _Base")
     expect_file(long_dest .. "/_Base/fvl/readme", "hello\n", "longer _Base bytes")
     local long_parts = partial_dirs(long_dest)
-    expect(#long_parts == 1 and long_parts[1]:find(S2, 1, true) == 1,
-        "longer partial " .. table.concat(long_parts, ","))
+    expect(#long_parts == 0, "longer partial " .. table.concat(long_parts, ","))
     expect(lfs.symlinkattributes(long_dest .. "/.casually_backup.lock") == nil,
         "longer left a lock")
 
@@ -1457,10 +1460,10 @@ local function gate()
         source_map = map_of(short_src),
         workers = 4,
     }), {}, user_fs())
-    expect_stderr(code, out, err, 2, "source is shorter than the listing", "workers short")
-    expect(lfs.symlinkattributes(short_dest .. "/_Base") == nil, "workers short published")
+    expect_warn(code, out, err, "source is shorter than the listing: " .. short_src .. "/fvl/readme (skipped)", "workers short")
+    expect(lfs.symlinkattributes(short_dest .. "/_Base") ~= nil, "workers short published")
     local short_parts = partial_dirs(short_dest)
-    expect(#short_parts == 1, "workers short partial " .. table.concat(short_parts, ","))
+    expect(#short_parts == 0, "workers short partial " .. table.concat(short_parts, ","))
     expect(lfs.symlinkattributes(short_dest .. "/.casually_backup.lock") == nil,
         "workers short left a lock")
 end

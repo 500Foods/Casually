@@ -2688,6 +2688,18 @@ local function apply_fail(reason, class)
     return nil, reason, class or "apply"
 end
 
+local function is_source_error(reason)
+    if reason:find("cannot write", 1, true) == 1 then
+        return false
+    end
+    return reason:find("cannot read source", 1, true) ~= nil
+        or reason:find("source is shorter than the listing", 1, true) ~= nil
+        or reason:find("source is longer than the listing", 1, true) ~= nil
+        or reason:find("source is not a regular file", 1, true) ~= nil
+        or reason:find("source is a symlink", 1, true) ~= nil
+        or reason:match("^cannot read %S") ~= nil
+end
+
 local function run_batch(command, payload)
     local handle, open_err = io.popen(command, "w")
     if not handle then
@@ -2926,7 +2938,7 @@ local function open_input(open_source, path)
     return handle
 end
 
-local function copy_into(handle, size, writers, pulse)
+local function copy_into(handle, size, writers, pulse, source)
     local function beat(nbytes)
         if not pulse then
             return true
@@ -2945,10 +2957,18 @@ local function copy_into(handle, size, writers, pulse)
         end
         local buf, read_err = handle:read(want)
         if buf == nil and read_err ~= nil then
-            return apply_fail("cannot read source: " .. tostring(read_err))
+            local msg = "cannot read source"
+            if source then
+                msg = msg .. ": " .. source
+            end
+            return apply_fail(msg .. ": " .. tostring(read_err))
         end
         if type(buf) ~= "string" or #buf ~= want then
-            return apply_fail("source is shorter than the listing")
+            local msg = "source is shorter than the listing"
+            if source then
+                msg = msg .. ": " .. source
+            end
+            return apply_fail(msg)
         end
         for i = 1, #writers do
             local wrote, write_err = writers[i].handle:write(buf)
@@ -2964,10 +2984,18 @@ local function copy_into(handle, size, writers, pulse)
     end
     local extra, extra_err = handle:read(1)
     if extra == nil and extra_err ~= nil then
-        return apply_fail("cannot read source: " .. tostring(extra_err))
+        local msg = "cannot read source"
+        if source then
+            msg = msg .. ": " .. source
+        end
+        return apply_fail(msg .. ": " .. tostring(extra_err))
     end
     if extra ~= nil then
-        return apply_fail("source is longer than the listing")
+        local msg = "source is longer than the listing"
+        if source then
+            msg = msg .. ": " .. source
+        end
+        return apply_fail(msg)
     end
     return true
 end
@@ -3133,13 +3161,13 @@ local function perform_copy_job(payload, cache)
         end
         dests[#dests + 1] = fields[i]
     end
-    local ready, err = check_source_file(source, cache)
+    local ready, err, class = check_source_file(source, cache)
     if not ready then
-        return nil, err
+        return nil, err, is_source_error(err) and "source" or class
     end
     local input, open_err = io.open(source, "rb")
     if not input then
-        return nil, "cannot read " .. source .. ": " .. tostring(open_err)
+        return nil, "cannot read " .. source .. ": " .. tostring(open_err), "source"
     end
     local writers = {}
     for i = 1, #dests do
@@ -3151,16 +3179,16 @@ local function perform_copy_job(payload, cache)
         end
         writers[i] = { handle = handle, path = dests[i] }
     end
-    local copied, copy_err = copy_into(input, size, writers, nil)
+    local copied, copy_err, copy_class = copy_into(input, size, writers, nil, source)
     input:close()
     if not copied then
         close_writers(writers)
-        return nil, copy_err
+        return nil, copy_err, is_source_error(copy_err) and "source" or copy_class
     end
-    local finished, fin_err = finish_outputs(writers, mtime)
+    local finished, fin_err, fin_class = finish_outputs(writers, mtime)
     if not finished then
         close_writers(writers)
-        return nil, fin_err
+        return nil, fin_err, fin_class
     end
     return true
 end
@@ -3181,14 +3209,21 @@ function M.copy_worker()
             io.stdout:flush()
             return nil, err
         end
-        local ok, reason = perform_copy_job(payload, cache)
+        local ok, reason, class = perform_copy_job(payload, cache)
         if not ok then
-            io.stdout:write("fail " .. one_line(reason) .. "\n")
-            io.stdout:flush()
-            return nil, reason
+            if class == "source" then
+                io.stdout:write("skip " .. one_line(reason) .. "\n")
+                io.stdout:flush()
+                goto continue
+            else
+                io.stdout:write("fail " .. one_line(reason) .. "\n")
+                io.stdout:flush()
+                return nil, reason
+            end
         end
         io.stdout:write("ok\n")
         io.stdout:flush()
+        ::continue::
     end
 end
 
@@ -3259,7 +3294,7 @@ local function pool_wanted(config, fs, screen)
     return configured_workers(config) > 1
 end
 
-local function copy_with_workers(jobs, workers, on_copied)
+local function copy_with_workers(jobs, workers, on_copied, on_skipped)
     local system = require("system")
     local script = this_script()
     if not script then
@@ -3496,10 +3531,14 @@ local function copy_with_workers(jobs, workers, on_copied)
                     worker.busy = false
                     local job = worker.current
                     worker.current = nil
-                    if line == "ok" then
+                     if line == "ok" then
                         on_copied(job)
                     elseif line:sub(1, 5) == "fail " then
                         return fail_pool(line:sub(6))
+                    elseif line:sub(1, 5) == "skip " then
+                        if on_skipped then
+                            on_skipped(job, line:sub(6))
+                        end
                     else
                         return fail_pool("copy worker: " .. one_line(line))
                     end
@@ -3546,6 +3585,10 @@ function M.apply(config, fs, plan, screen)
     local function fail(reason, fail_class)
         release_all()
         return nil, reason, fail_class or "apply"
+    end
+    local warnings = {}
+    local function warn(reason)
+        warnings[#warnings + 1] = reason
     end
 
     if screen then
@@ -3743,6 +3786,12 @@ function M.apply(config, fs, plan, screen)
                     for w = 1, #job.writers do
                         queue_new(job.writers[w].action, job.writers[w].path, true)
                     end
+                end, function(job, reason)
+                    for w = 1, #job.writers do
+                        local dest = job.writers[w].path
+                        pcall(function() os.remove(dest) end)
+                    end
+                    warn(reason .. " (skipped)")
                 end)
             if not copied then
                 return nil, err, class
@@ -3873,11 +3922,21 @@ function M.apply(config, fs, plan, screen)
                 local ready
                 ready, err, class = check_source_file(source_path)
                 if not ready then
+                    if is_source_error(err) then
+                        warn(err .. " (skipped)")
+                        if screen then show_i = show_n - 1; finish_show("S", rec.size) end
+                        goto next_record
+                    end
                     return fail(err, class)
                 end
                 local input
                 input, err = open_input(open_source, source_path)
                 if not input then
+                    if is_source_error(err) then
+                        warn(err .. " (skipped)")
+                        if screen then show_i = show_n - 1; finish_show("S", rec.size) end
+                        goto next_record
+                    end
                     return fail(err, class)
                 end
                 for w = 1, #writers do
@@ -3901,7 +3960,7 @@ function M.apply(config, fs, plan, screen)
                         return true
                     end
                     return screen:pulse(nbytes)
-                end)
+                end, source_path)
                 input:close()
                 if not copied then
                     close_files((function()
@@ -3913,6 +3972,14 @@ function M.apply(config, fs, plan, screen)
                         end
                         return open_handles
                     end)())
+                    if is_source_error(err) then
+                        for w = 1, #writers do
+                            pcall(function() os.remove(writers[w].path) end)
+                        end
+                        warn(err .. " (skipped)")
+                        if screen then show_i = show_n - 1; finish_show("S", rec.size) end
+                        goto next_record
+                    end
                     return fail(err, class)
                 end
                 local finished
@@ -4008,6 +4075,7 @@ function M.apply(config, fs, plan, screen)
                 end
             end
         end
+        ::next_record::
     end
     return true
     end
@@ -4064,7 +4132,7 @@ function M.apply(config, fs, plan, screen)
     end
 
     release_all()
-    return true
+    return true, nil, nil, warnings
 end
 
 local function exit_code(class)
@@ -4104,7 +4172,7 @@ function M.perform(config, opts, fs, out, err_out, screen)
         return 0
     end
     local ok
-    ok, err, class = M.apply(config, fs, plan, screen)
+    ok, err, class, apply_warnings = M.apply(config, fs, plan, screen)
     if not ok then
         if screen then
             screen.failure = err
@@ -4116,7 +4184,17 @@ function M.perform(config, opts, fs, out, err_out, screen)
     end
     if screen then
         screen.warnings = plan.warnings
+        if apply_warnings then
+            for i = 1, #apply_warnings do
+                screen.warnings[#screen.warnings + 1] = apply_warnings[i]
+            end
+        end
         return 0
+    end
+    if apply_warnings then
+        for i = 1, #apply_warnings do
+            err_out:write(apply_warnings[i] .. "\n")
+        end
     end
     for i = 1, #plan.warnings do
         err_out:write(plan.warnings[i] .. "\n")

@@ -305,6 +305,12 @@ local function expect_success(code, out, err, msg)
     expect(err == OWNER, msg .. " stderr [" .. err .. "]")
 end
 
+local function expect_warn(code, out, err, reason, msg)
+    expect(code == 0, msg .. " exit " .. tostring(code) .. " " .. err)
+    expect(out == "", msg .. " stdout [" .. out .. "]")
+    expect(err == reason .. "\n" .. OWNER, msg .. " stderr [" .. err .. "]")
+end
+
 local function expect_line(code, out, err, status, line, msg)
     expect(code == status, msg .. " exit " .. tostring(code) .. " [" .. err .. "]")
     expect(out == "", msg .. " stdout [" .. out .. "]")
@@ -777,12 +783,12 @@ local function size_case()
     write_file(tree .. "/fvl/readme", "hello!!\n!")
     sh("chmod 644 " .. sh_quote(tree .. "/fvl/readme"))
     code, out, err = config_run(dir, index2, { dest }, opts)
-    expect_line(code, out, err, 2, "source is longer than the listing", "size")
-    expect(lfs.symlinkattributes(dest .. "/" .. S2) == nil, "size published")
+    expect_warn(code, out, err, "source is longer than the listing: " .. tree .. "/fvl/readme (skipped)", "size")
+    expect(lfs.symlinkattributes(dest .. "/" .. S2) ~= nil, "size published")
     expect(ino_of(snap(dest, "_Base", "/fvl/readme")) == size_ino, "size moved base")
     expect(read_all(snap(dest, "_Base", "/fvl/readme")) == "hello\n", "size base bytes")
     local parts = partials_of(dest)
-    expect(#parts == 1 and parts[1]:find(S2, 1, true) == 1, "size partial " .. table.concat(parts, ","))
+    expect(#parts == 0, "size partial " .. table.concat(parts, ","))
     expect(lfs.symlinkattributes(dest .. "/.casually_backup.lock") == nil, "size lock")
 end
 
