@@ -48,8 +48,8 @@ Or use a JSON config file for repeatable, multi-root setups:
 
 | Document | Description |
 |----------|-------------|
-| [INSTRUCTIONS-INDEX.md](INSTRUCTIONS-INDEX.md) | How to generate listings: `casually_index.lua` CLI flags, JSON config, listing format, exclude patterns. |
-| [INSTRUCTIONS-BACKUP.md](INSTRUCTIONS-BACKUP.md) | How to run backups: `casually_backup.lua` CLI flags, JSON config, source_map remapping, report output, exit codes. |
+| [Index](INSTRUCTIONS-INDEX.md) | How to generate listings: `casually_index.lua` CLI flags, JSON config, listing format, exclude patterns. |
+| [Backup](INSTRUCTIONS-BACKUP.md) | How to run backups: `casually_backup.lua` CLI flags, JSON config, source_map remapping, report output, exit codes. |
 
 ## Requirements
 
