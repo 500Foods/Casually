@@ -1,13 +1,65 @@
 # Casually
 
-This is a pair of Lua scripts used to make backups. The need came from having a remote filesystem that was large and physically far away, and wanting multiple local copies without having to fiddle with rsync or worry about all kinds of other issues. Instead, we build an index at the remote site, copy it over, and use that to build copies locally, retrieving only what has changed. So for a large filesystem with hundreds of thousands of files where only a few small files change daily, this is ideal. Virtually no network traffic except for the changed files. 
+A pair of Lua 5.5 scripts for efficient remote filesystem backup. The name is an anagram of "LuaSync" — because why settle for predictable names?
 
-The name came from trying to come up with an anagram of LuaSync which is probably already taken and kind of boring.
+## Overview
+
+When you have a large remote filesystem and need multiple local copies, `rsync` and friends can be slow because they scan over the network. Casually takes a different approach:
+
+1. **`casually_index.lua`** runs on the remote host, walks your directory trees, and writes a flat sorted listing file (paths, mtimes, permissions, sizes, owners).
+2. You transfer just the listing file (compressed with `brotli`, it's tiny).
+3. **`casually_backup.lua`** reads the listing on your local machine, compares it against existing snapshots, and copies only the files that changed — into as many backup folders as you want.
+
+For a large filesystem with hundreds of thousands of files where only a few small files change daily, this is ideal. Virtually no network traffic except for the changed files.
+
+```
+┌──────────────┐     ┌────────────────┐     ┌──────────────┐
+│  Remote host │     │  Listing file  │     │ Local backup │
+│               │     │  (transfer)   │     │ destinations │
+│ casually_index│────>│  brotli -c    │──>   │               │
+│   walk dirs   │     │  scp/ssh      │     │ casually_backup│
+│   write listing│     │               │     │   copy changed│
+└──────────────┘     └────────────────┘     └──────────────┘
+```
+
+## Quick Start
+
+```bash
+# Remote: build a listing of /srv/data
+./casually_index.lua --source /srv/data --index /tmp/index.list
+
+# Local: back up to three destinations using that listing
+./casually_backup.lua \
+    --index /tmp/index.list \
+    --dest /backups/primary \
+    --dest /backups/secondary \
+    --dest /backups/offsite
+```
+
+Or use a JSON config file for repeatable, multi-root setups:
+
+```bash
+./casually_backup.lua --config /etc/casually/my-backup.json
+```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [INSTRUCTIONS-INDEX.md](INSTRUCTIONS-INDEX.md) | How to generate listings: `casually_index.lua` CLI flags, JSON config, listing format, exclude patterns. |
+| [INSTRUCTIONS-BACKUP.md](INSTRUCTIONS-BACKUP.md) | How to run backups: `casually_backup.lua` CLI flags, JSON config, source_map remapping, report output, exit codes. |
+
+## Requirements
+
+- **Lua 5.5**
+- LuaRocks packages: `lua-filesystem`, `dkjson`, `terminal`, `lua-system`
+- `brotli` (for compressing listings during transfer)
 
 ## Additional Notes
-While this project is currently under active development, feel free to give it a try and post any issues you encounter.  Or start a discussion if you would like to help steer the project in a particular direction.  Early days yet, so a good time to have your voice heard.  As the project unfolds, additional resources will be made available, including platform binaries, more documentation, demos, and so on.
 
-## Repository Information 
+While this project is currently under active development, feel free to give it a try and post any issues you encounter. Or start a discussion if you would like to help steer the project in a particular direction. Early days yet, so a good time to have your voice heard. As the project unfolds, additional resources will be made available, including platform binaries, more documentation, demos, and so on.
+
+## Repository Information
 [![Count Lines of Code](https://github.com/500Foods/Template/actions/workflows/main.yml/badge.svg)](https://github.com/500Foods/Casually/actions/workflows/main.yml)
 <!--CLOC-START -->
 ```cloc
@@ -16,7 +68,7 @@ Last updated at 2026-10-10 14:22:28 UTC
 Language                     files          blank        comment           code
 -------------------------------------------------------------------------------
 Lua                             16           1030            195          14428
-Markdown                         5            380              2            801
+Markdown                         5            380              2           801
 Bourne Shell                     1             11              2             79
 YAML                             2              8             13             37
 -------------------------------------------------------------------------------

@@ -4189,7 +4189,7 @@ local function extract_branch(path)
     local segments = {}
     for seg in path:gmatch("[^/]+") do
         segments[#segments + 1] = seg
-        if #segments >= 4 then break end
+        if #segments >= 6 then break end
     end
     if #segments == 0 then return "(root)" end
     return table.concat(segments, "/")
