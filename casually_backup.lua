@@ -79,6 +79,7 @@ local ONCE = {
     ["--index"] = true,
     ["--omit-limit"] = true,
     ["--omit-fraction"] = true,
+    ["--omit-ignore"] = true,
     ["--workers"] = true,
     ["--report"] = true,
     ["--report-dir"] = true,
@@ -194,6 +195,7 @@ function M.parse_args(argv)
         dry_run = dry_run,
         omit_limit = values["--omit-limit"],
         omit_fraction = values["--omit-fraction"],
+        omit_ignore = values["--omit-ignore"],
         workers = values["--workers"],
         report = values["--report"],
         report_dir = values["--report-dir"],
@@ -222,6 +224,7 @@ function M.help_text()
         "--dry-run                     Print the plan and change nothing.",
         "--omit-limit <n>             Refuse a snapshot that drops more than n paths. Default 1000.",
         "--omit-fraction <number>     Refuse a snapshot that drops more than this fraction. Default 0.02.",
+        "--omit-ignore <p1:p2:...>    Path prefixes whose omissions do not count toward the limits (still reported).",
         "--workers <n>                Copy files with n processes. Default 4. From 1 to 64.",
         "--report <email>              Print a backup summary to stderr after running.",
         "--report-dir <dir>            Write detailed report lines to <dir>/<stamp>.log instead of stderr.",
@@ -248,6 +251,7 @@ local CONFIG_KEYS = {
     exclude = true,
     omit_limit = true,
     omit_fraction = true,
+    omit_ignore = true,
     workers = true,
     report = true,
     report_dir = true,
@@ -672,6 +676,42 @@ local function resolve_report_dir(cmd, obj)
     return nil
 end
 
+-- Omissions under these listing prefixes (e.g. removed kernel trees) are still
+-- performed and reported, but do not count toward omit_limit/omit_fraction.
+local function resolve_omit_ignore(cmd, obj)
+    local list = {}
+    if cmd.omit_ignore ~= nil then
+        for p in tostring(cmd.omit_ignore):gmatch("[^:]+") do
+            if p:sub(1, 1) ~= "/" then
+                return config_fail("--omit-ignore prefixes must start with /")
+            end
+            list[#list + 1] = p
+        end
+    elseif obj ~= nil and obj.omit_ignore ~= nil and obj.omit_ignore ~= JSON_NULL then
+        if type(obj.omit_ignore) ~= "table" or json_kind(obj.omit_ignore) ~= "array" then
+            return config_fail("omit_ignore must be an array")
+        end
+        for i = 1, #obj.omit_ignore do
+            local p = obj.omit_ignore[i]
+            if type(p) ~= "string" or p:sub(1, 1) ~= "/" then
+                return config_fail("omit_ignore entries must be strings starting with /")
+            end
+            list[#list + 1] = p
+        end
+    end
+    return list
+end
+
+local function omit_ignored(listing, prefixes)
+    for i = 1, #prefixes do
+        local p = prefixes[i]
+        if listing:sub(1, #p) == p or (p:sub(-1) == "/" and listing == p:sub(1, -2)) then
+            return true
+        end
+    end
+    return false
+end
+
 local function assemble(index, dests, map, exclude, cmd, obj)
     local limit, fraction, err, class = resolve_limits(cmd, obj)
     if class then
@@ -684,7 +724,16 @@ local function assemble(index, dests, map, exclude, cmd, obj)
     end
     local report = resolve_report(cmd, obj)
     local report_dir = resolve_report_dir(cmd, obj)
-    return finish_config(index, dests, map, exclude, limit, fraction, workers, report, report_dir)
+    local ignore
+    ignore, err, class = resolve_omit_ignore(cmd, obj)
+    if class then
+        return nil, err, class
+    end
+    local config = finish_config(index, dests, map, exclude, limit, fraction, workers, report, report_dir)
+    if #ignore > 0 then
+        config.omit_ignore = ignore
+    end
+    return config
 end
 
 local function decode_config(text)
@@ -2642,6 +2691,23 @@ function M.plan(config, fs, screen)
         )
         if choice.previous then
             local omitted = one.counts.omit
+            local ignore = config.omit_ignore or {}
+            local ignored = 0
+            if #ignore > 0 then
+                for k = 1, #one.actions.omit do
+                    if omit_ignored(one.actions.omit[k].listing, ignore) then
+                        ignored = ignored + 1
+                    end
+                end
+            end
+            one.counts.omit_ignored = ignored
+            if ignored > 0 then
+                one.warnings[#one.warnings + 1] = string.format(
+                    "casually_backup: ignored (kernel) %d of %d omissions in %s",
+                    ignored, omitted, dest
+                )
+            end
+            omitted = omitted - ignored
             if omitted > limit and omitted > fraction * #desired then
                 return plan_fail(string.format(
                     "too many omissions: %s omitted %d limit %d fraction %s",
