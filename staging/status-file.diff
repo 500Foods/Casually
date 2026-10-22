@@ -1,0 +1,522 @@
+--- casually_backup.lua	2026-10-18 08:06:19.199339697 -0700
++++ staging/casually_backup.lua	2026-10-22 11:13:56.556780463 -0700
+@@ -53,6 +53,298 @@
+ local dkjson = load_library("dkjson")
+ local terminal = load_library("terminal")
+ 
++-- Live status file. A small JSON document rewritten atomically (temp file,
++-- then rename) at most every ST.INTERVAL seconds and at every phase
++-- change, so `cat` gives proof of life. It is an observer only: a failed
++-- write never fails the backup. Hot paths call ST.tick(), which only
++-- reads the clock every ST.EVERY calls.
++local ST = {
++    system = require("system"),
++    INTERVAL = 10,
++    EVERY = 64,
++    cur = nil,
++}
++ST.KEYS = {
++    "updated", "pid", "stamp", "profile", "config", "phase", "exit_code",
++    "error", "current_dir", "current_dest", "files_done", "files_total",
++    "bytes_done", "bytes_total", "pct_files", "pct_bytes",
++    "rate_files_per_s", "eta_seconds", "started", "finished", "workers",
++    "progress_source",
++}
++
++function ST.iso()
++    local text = os.date("%Y-%m-%dT%H:%M:%S%z")
++    return (text:gsub("([+-]%d%d)(%d%d)$", "%1:%2"))
++end
++
++function ST.json(v)
++    if v == nil then
++        return "null"
++    end
++    local kind = type(v)
++    if kind == "number" then
++        if v ~= v or v == math.huge or v == -math.huge then
++            return "null"
++        end
++        if math.type(v) == "integer" then
++            return tostring(v)
++        end
++        return string.format("%.1f", v)
++    end
++    if kind == "boolean" then
++        return tostring(v)
++    end
++    return dkjson.quotestring(tostring(v))
++end
++
++function ST.dirname(path)
++    if type(path) ~= "string" then
++        return nil
++    end
++    local dir = path:match("^(.*)/[^/]*$")
++    if dir == nil then
++        return path
++    end
++    if dir == "" then
++        return "/"
++    end
++    return dir
++end
++
++function ST.write()
++    local s = ST.cur
++    local f = s.f
++    local now = ST.system.monotime()
++    s.written = now
++    s.ticks = 0
++    f.updated = ST.iso()
++    f.current_dir = ST.dirname(s.last_path)
++    f.current_dest = s.last_dest
++    local ft, bt = f.files_total, f.bytes_total
++    f.pct_files = (ft and ft > 0) and (math.floor(f.files_done * 1000 / ft) / 10) or nil
++    f.pct_bytes = (bt and bt > 0) and (math.floor(f.bytes_done * 1000 / bt) / 10) or nil
++    f.rate_files_per_s = nil
++    f.eta_seconds = nil
++    if s.copy_at and f.phase == "copying" then
++        local elapsed = now - s.copy_at
++        local moved = f.files_done - s.copy_base
++        if elapsed >= 1 and moved > 0 then
++            local rate = moved / elapsed
++            f.rate_files_per_s = math.floor(rate * 10 + 0.5) / 10
++            if ft then
++                f.eta_seconds = math.floor((ft - f.files_done) / rate + 0.5)
++            end
++        end
++    end
++    local parts = {}
++    for i, key in ipairs(ST.KEYS) do
++        parts[i] = "  " .. ST.json(key) .. ": " .. ST.json(f[key])
++    end
++    local body = "{\n" .. table.concat(parts, ",\n") .. "\n}\n"
++    local tmp = s.path .. ".tmp." .. tostring(f.pid)
++    local h = io.open(tmp, "w")
++    if not h then
++        return
++    end
++    local wrote = h:write(body)
++    local closed = h:close()
++    if not wrote or not closed then
++        os.remove(tmp)
++        return
++    end
++    if s.chmod == nil then
++        s.chmod = lfs.attributes(tmp, "permissions") ~= "rw-r--r--"
++    end
++    if s.chmod then
++        os.execute("chmod 0644 '" .. tmp:gsub("'", "'\\''") .. "'")
++    end
++    if not os.rename(tmp, s.path) then
++        os.remove(tmp)
++    end
++end
++
++function ST.flush()
++    if ST.cur then
++        pcall(ST.write)
++    end
++end
++
++function ST.tick(dest, path)
++    local s = ST.cur
++    if not s then
++        return
++    end
++    if dest then
++        s.last_dest = dest
++    end
++    if path then
++        s.last_path = path
++    end
++    local n = s.ticks + 1
++    s.ticks = n
++    if n < ST.EVERY then
++        return
++    end
++    s.ticks = 0
++    if ST.system.monotime() - s.written >= ST.INTERVAL then
++        ST.flush()
++    end
++end
++
++function ST.progress(done, path)
++    local s = ST.cur
++    if not s then
++        return
++    end
++    s.f.files_done = done
++    if path then
++        s.last_path = path
++    end
++    ST.tick()
++end
++
++function ST.dest(dest)
++    if ST.cur then
++        ST.cur.last_dest = dest
++    end
++end
++
++function ST.bytes(n)
++    local s = ST.cur
++    if s and type(n) == "number" and n > 0 then
++        s.f.bytes_done = s.f.bytes_done + n
++        ST.tick()
++    end
++end
++
++function ST.job_done(job)
++    local s = ST.cur
++    if not s then
++        return
++    end
++    s.f.files_done = s.f.files_done + 1
++    s.f.bytes_done = s.f.bytes_done + (job.size or 0)
++    s.last_path = job.source
++    ST.tick()
++end
++
++function ST.phase(phase)
++    local s = ST.cur
++    if not s then
++        return
++    end
++    s.f.phase = phase
++    if phase == "copying" then
++        s.copy_at = ST.system.monotime()
++        s.copy_base = s.f.files_done
++    end
++    ST.flush()
++end
++
++function ST.rebase()
++    local s = ST.cur
++    if s then
++        s.copy_at = ST.system.monotime()
++        s.copy_base = s.f.files_done
++    end
++end
++
++function ST.field(key, value)
++    if ST.cur then
++        ST.cur.f[key] = value
++    end
++end
++
++function ST.error(err)
++    if ST.cur then
++        ST.cur.f.error = (tostring(err):gsub("[\r\n\t]", " "))
++    end
++end
++
++function ST.begin_copy(plan, pooled, workers)
++    local s = ST.cur
++    if not s then
++        return
++    end
++    local bytes = 0
++    local dirs = 0
++    for r = 1, #plan.records do
++        local rec = plan.records[r]
++        if rec.kind == "dir" then
++            dirs = dirs + 1
++        elseif rec.kind == "file" then
++            for i = 1, #plan.destinations do
++                local found = plan.destinations[i].index[rec.path]
++                if found and found.kind == "copy" then
++                    bytes = bytes + (rec.size or 0)
++                    break
++                end
++            end
++        end
++    end
++    s.dirs = dirs
++    s.f.stamp = plan.stamp or s.f.stamp
++    s.f.files_total = #plan.records
++    s.f.bytes_total = bytes
++    s.f.files_done = 0
++    s.f.bytes_done = 0
++    if pooled then
++        s.f.workers = workers
++        s.f.progress_source = "parent, per finished copy job (workers report each file when done; bytes inside a file in flight are not seen); dirs count at setup, hardlinks and symlinks after the copies"
++        s.last_dest = "all destinations (worker pool)"
++    else
++        s.f.workers = 1
++        s.f.progress_source = "parent, per record; bytes per chunk"
++    end
++    ST.phase("copying")
++end
++
++function ST.open(cmd, cfg, pid)
++    local path = cmd.status_file
++    if not path and type(cfg.report_dir) == "string" then
++        local dir = cfg.report_dir:gsub("/+$", "")
++        local parent = dir:match("^(.*)/[^/]+$")
++        if parent and parent ~= "" then
++            path = parent .. "/status.json"
++        end
++    end
++    if not path then
++        return
++    end
++    local holder = ST.dirname(path)
++    ST.cur = {
++        path = path,
++        ticks = 0,
++        written = 0,
++        f = {
++            pid = tonumber(pid) or pid,
++            profile = holder and holder:match("([^/]+)$"),
++            config = cmd.config or cmd.index,
++            phase = "starting",
++            files_done = 0,
++            bytes_done = 0,
++            started = ST.iso(),
++        },
++    }
++    ST.flush()
++end
++
++function ST.finish(code)
++    local s = ST.cur
++    if not s then
++        return
++    end
++    s.f.exit_code = code
++    if code == 0 then
++        s.f.phase = "done"
++    else
++        s.f.phase = "failed"
++    end
++    s.f.finished = ST.iso()
++    ST.flush()
++    ST.cur = nil
++end
++
+ local M = {
+     VERSION = VERSION,
+     lfs = lfs,
+@@ -83,6 +375,7 @@
+     ["--workers"] = true,
+     ["--report"] = true,
+     ["--report-dir"] = true,
++    ["--status-file"] = true,
+ }
+ 
+ local function one_line(text)
+@@ -199,6 +492,7 @@
+         workers = values["--workers"],
+         report = values["--report"],
+         report_dir = values["--report-dir"],
++        status_file = values["--status-file"],
+     }
+     if has_config then
+         cmd.config = values["--config"]
+@@ -228,6 +522,7 @@
+         "--workers <n>                Copy files with n processes. Default 4. From 1 to 64.",
+         "--report <email>              Print a backup summary to stderr after running.",
+         "--report-dir <dir>            Write detailed report lines to <dir>/<stamp>.log instead of stderr.",
++        "--status-file <file>          Live JSON status, rewritten every ~10 s (default: <report-dir>/../status.json).",
+         "--help                       Show this help and exit.",
+         "--version                    Show the script, Lua, and terminal.lua versions.",
+         "",
+@@ -1275,6 +1570,7 @@
+         records[#records + 1] = rec
+         prev = rec.path
+         line_no = line_no + 1
++        ST.tick(nil, rec.path)
+         if last then
+             break
+         end
+@@ -1672,6 +1968,7 @@
+                 return nil, "cannot read " .. child_abs .. ": " .. tostring(aerr), "scan"
+             end
+             entries[child_listing] = attr
++            ST.tick(nil, child_listing)
+             if is_excluded(child_listing, exclude) then
+                 -- The excluded path is an omission. Its children are not read.
+             elseif attr.mode == "directory" then
+@@ -1808,6 +2105,7 @@
+     for i = 1, #desired do
+         local rec = desired[i]
+         local attr = entries[rec.path]
++        ST.tick(dest, rec.path)
+         if rec.kind == "dir" or not attr then
+             if rec.kind == "dir" then
+                 add_create(actions, "mkdir", dest, snap, rec, nil, owners)
+@@ -2553,6 +2851,7 @@
+         return plan_fail("omit numbers are required", "config")
+     end
+ 
++    ST.phase("listing")
+     local text, err, class = read_text(config.index, "listing", "config")
+     if not text then
+         return nil, err, class
+@@ -2562,6 +2861,7 @@
+     if not records then
+         return nil, err, class
+     end
++    ST.phase("planning")
+ 
+     local desired = {}
+     local desired_set = {}
+@@ -2580,6 +2880,7 @@
+     if not stamp then
+         stamp = os.date("!%Y%m%d-%H%M")
+     end
++    ST.field("stamp", stamp)
+ 
+     if screen then
+         local sok, serr, sclass = screen:start(#desired)
+@@ -2643,6 +2944,7 @@
+         local dest = config.destinations[i]
+         local choice = choices[i]
+         local walked
++        ST.dest(dest)
+         if screen then
+             local sok, serr, sclass = screen:pulse()
+             if not sok then
+@@ -3595,6 +3897,7 @@
+                 end
+                 worker.busy = true
+                 worker.current = job
++                ST.tick(nil, job.source)
+                 next_job = next_job + 1
+             end
+         end
+@@ -3643,6 +3946,7 @@
+                 end
+             end
+         end
++        ST.tick()
+         if not progressed then
+             system.sleep(0.001)
+         end
+@@ -3884,13 +4188,17 @@
+                 link_records[#link_records + 1] = rec
+             end
+         end
++        ST.progress(ST.cur and ST.cur.dirs or 0)
++        ST.rebase()
+         if #jobs > 0 then
+             local copied, err, class = copy_with_workers(
+                 jobs, configured_workers(config), function(job)
++                    ST.job_done(job)
+                     for w = 1, #job.writers do
+                         queue_new(job.writers[w].action, job.writers[w].path, true)
+                     end
+                 end, function(job, reason)
++                    ST.job_done(job)
+                     for w = 1, #job.writers do
+                         local dest = job.writers[w].path
+                         pcall(function() os.remove(dest) end)
+@@ -3903,12 +4211,14 @@
+         end
+         for i = 1, #file_links do
+             local linked, err, class = hardlink_one(file_links[i].action, file_links[i].root)
++            ST.tick(nil, file_links[i].action.listing)
+             if not linked then
+                 return nil, err, class
+             end
+         end
+         for r = 1, #link_records do
+             local rec = link_records[r]
++            ST.progress(#plan.records - #link_records + r - 1, rec.path)
+             local links = {}
+             for i = 1, #plan.destinations do
+                 local built = plan.destinations[i]
+@@ -3946,12 +4256,14 @@
+     for r = 1, #plan.records do
+         local rec = plan.records[r]
+         local show_i = 0
++        ST.progress(r - 1, rec.path)
+         local show_n = #plan.destinations
+         local function close_record()
+             show_i = show_i + 1
+             return show_i == show_n
+         end
+         local function begin_show(dest, snapshot, published)
++            ST.dest(dest)
+             if not screen then
+                 return true
+             end
+@@ -4060,6 +4372,7 @@
+                 end
+                 local copied
+                 copied, err, class = copy_into(input, rec.size, writers, function(nbytes)
++                    ST.bytes(nbytes)
+                     if not screen then
+                         return true
+                     end
+@@ -4181,11 +4494,14 @@
+         end
+         ::next_record::
+     end
++    ST.progress(#plan.records)
+     return true
+     end
+ 
+     local ran, run_err, run_class
+-    if pool_wanted(config, fs, screen) then
++    local pooled = pool_wanted(config, fs, screen)
++    ST.begin_copy(plan, pooled, configured_workers(config))
++    if pooled then
+         ran, run_err, run_class = apply_pooled()
+     else
+         ran, run_err, run_class = apply_serial()
+@@ -4194,6 +4510,8 @@
+         return fail(run_err, run_class)
+     end
+ 
++    ST.progress(#plan.records)
++    ST.phase("finalizing")
+     for _, mode in ipairs(sorted_keys(chmod_paths)) do
+         local payload = nul_join(chmod_paths[mode])
+         local ran, batch_err = chmod_batch(mode, payload)
+@@ -4374,10 +4692,12 @@
+     local plan, err, class = M.plan(config, fs, screen)
+     if not plan then
+         if screen then
++            ST.error(err)
+             screen.failure = err
+             screen.class = class
+             return exit_code(class)
+         end
++        ST.error(err)
+         err_out:write("casually_backup: " .. one_line(err) .. "\n")
+         return exit_code(class)
+     end
+@@ -4392,10 +4712,12 @@
+     ok, err, class, apply_warnings = M.apply(config, fs, plan, screen)
+     if not ok then
+         if screen then
++            ST.error(err)
+             screen.failure = err
+             screen.class = class
+             return exit_code(class)
+         end
++        ST.error(err)
+         err_out:write("casually_backup: " .. one_line(err) .. "\n")
+         return exit_code(class)
+     end
+@@ -4477,6 +4799,9 @@
+         io.stderr:write("casually_backup: " .. one_line(err) .. "\n")
+         return exit_code(class)
+     end
++    if not cmd.dry_run then
++        ST.open(cmd, cfg, process_id())
++    end
+     if cmd.dry_run or not stdout_is_tty() then
+         return M.perform(cfg, { dry_run = cmd.dry_run == true })
+     end
+@@ -4518,6 +4843,7 @@
+ 
+ if invoked_as_script() then
+     local code = M.main(arg)
++    ST.finish(code)
+     os.exit(code)
+ end
+ 
